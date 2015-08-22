@@ -23,9 +23,11 @@
 
 ;; (def stop-process-time (ref (t/now)))
 
-;; 初期値は昔にする
+  ;; 初期値は昔にする
 (def stop-process-time (ref
                         (f/parse (f/formatter "dd.MM.yyyy HH:mm:ss.SSS") "01.01.2000 00:00:00.000")))
+
+(def strategy-queue (ref ()))
 
 ;; (need-sampling? (->tick-event "EUR_USD" "24.07.2015 01:00:00.191" "1.09890" "1.09892") 5 (f/formatter "dd.MM.yyyy HH:mm:ss.SSS"))
 ;; (f/parse (f/formatter "dd.MM.yyyy HH:mm:ss.SSS") "24.07.2015 01:00:00.191")
@@ -39,8 +41,6 @@
               true)
       false)))
 
-(def strategy-queue (ref ()))
-
 (defn drop-and-conj [val limit]
   (if (> (count @strategy-queue) limit)
     (dosync (alter strategy-queue drop-last)))
@@ -52,23 +52,31 @@
   (let [n (read-string str)]
     (if (number? n) n nil)))
 
-(def sma-short-pre (ref 0.0))
-(def sma-long-pre (ref 0.0))
-(def sma-short (ref 0.0))
-(def sma-long (ref 0.0))
-
-(dosync (ref-set sma-short-pre 1))
+(defn sma-init []
+  (def strategy-queue (ref ()))
+  (def sma-short-pre (ref 0.0))
+  (def sma-long-pre (ref 0.0))
+  (def sma-short (ref 0.0))
+  (def sma-long (ref 0.0)))
 
 (defn sma [tick]
   (drop-and-conj (string->number (:bid tick)) 100)
   (if (= (count @strategy-queue) 101)
+    (do 
+    ;; データをセット
     (dosync
      (ref-set sma-short-pre @sma-short)
      (ref-set sma-long-pre @sma-long)
      (ref-set sma-short (average (take 25 @strategy-queue)))
      (ref-set sma-long (average (take 75 @strategy-queue)))
-     )))
-  
+     )
+    ;; 判定
+    (if (or (and (< @sma-short-pre @sma-long-pre) (> @sma-short @sma-long))
+            (and (> @sma-short-pre @sma-long-pre) (< @sma-short @sma-long)))
+      true
+      false))
+    false))
+
 (defn make-tick-event-fm-csv [data]
   (->tick-event "EUR_USD"
                 (get data 0)
@@ -79,10 +87,14 @@
   (println "Simulation start")
   (let [data (rest (csv/parse-csv (slurp "data/sample.csv")))
         tick-events (map make-tick-event-fm-csv data)]
+    ;; 初期化処理
+    (sma-init)
+    (def stop-process-time (ref
+                            (f/parse (f/formatter "dd.MM.yyyy HH:mm:ss.SSS") "01.01.2000 00:00:00.000")))
     ;; 一つずつ取り出して操作する
     (map (fn [tick-event]
            (if (need-sampling? tick-event 5 (f/formatter "dd.MM.yyyy HH:mm:ss.SSS"))
-             (sma tick-event)))
+             (println (sma tick-event))))
          tick-events)))
 
 (defn -main [& args]
